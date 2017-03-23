@@ -81,6 +81,11 @@ static RootViewController *instance;
     [window makeKeyAndVisible];
 }
 
+- (UIStatusBarStyle)preferredStatusBarStyle {
+    self.view.backgroundColor = [UIColor blackColor];
+    return UIStatusBarStyleLightContent;
+}
+
 - (void) enterBackground {
     [CalcView enterBackground];
 }
