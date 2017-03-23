@@ -33,7 +33,7 @@
 /**************************/
 
 typedef struct {
-    int x, y;
+    float x, y;
 } SkinPoint;
 
 typedef struct {
@@ -361,9 +361,10 @@ void skin_load(long *width, long *height) {
                 skin.height = height;
             }
         } else if (strncasecmp(line, "display:", 8) == 0) {
-            int x, y, xscale, yscale;
+            int x, y;
+            float xscale, yscale;
             unsigned long bg, fg;
-            if (sscanf(line + 8, " %d,%d %d %d %lx %lx", &x, &y,
+            if (sscanf(line + 8, " %d,%d %f %f %lx %lx", &x, &y,
                                             &xscale, &yscale, &bg, &fg) == 6) {
                 display_loc.x = x;
                 display_loc.y = y;
