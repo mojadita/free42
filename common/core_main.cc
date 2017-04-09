@@ -2034,9 +2034,16 @@ char *core_copy() {
         tb.buf = NULL;
         tb.size = 0;
         tb.capacity = 0;
+        tb.fail = false;
         tb_print_current_program(&tb);
         tb_write_null(&tb);
-        return tb.buf;
+        if (tb.fail) {
+            free(tb.buf);
+            display_error(ERR_INSUFFICIENT_MEMORY, 0);
+            redisplay();
+            return NULL;
+        } else
+            return tb.buf;
     } else if (flags.f.alpha_mode) {
         char *buf = (char *) malloc(5 * reg_alpha_length + 1);
         int bufptr = hp2ascii(buf, reg_alpha, reg_alpha_length);
@@ -2067,6 +2074,7 @@ char *core_copy() {
         tb.buf = NULL;
         tb.size = 0;
         tb.capacity = 0;
+        tb.fail = false;
         char buf[50];
         int n = 0;
         for (int r = 0; r < rm->rows; r++) {
@@ -2076,13 +2084,24 @@ char *core_copy() {
                     bufptr = hp2ascii(buf, phloat_text(data[n]), phloat_length(data[n]));
                 else
                     bufptr = real2buf(buf, data[n]);
-                buf[bufptr++] = c == rm->columns - 1 ? '\n' : '\t';
+                if (c == rm->columns - 1) {
+                    buf[bufptr++] = '\r';
+                    buf[bufptr++] = '\n';
+                } else {
+                    buf[bufptr++] = '\t';
+                }
                 tb_write(&tb, buf, bufptr);
                 n++;
             }
         }
         tb_write_null(&tb);
-        return tb.buf;
+        if (tb.fail) {
+            free(tb.buf);
+            display_error(ERR_INSUFFICIENT_MEMORY, 0);
+            redisplay();
+            return NULL;
+        } else
+            return tb.buf;
     } else if (reg_x->type == TYPE_COMPLEXMATRIX) {
         vartype_complexmatrix *cm = (vartype_complexmatrix *) reg_x;
         phloat *data = cm->array->data;
@@ -2090,18 +2109,30 @@ char *core_copy() {
         tb.buf = NULL;
         tb.size = 0;
         tb.capacity = 0;
+        tb.fail = false;
         char buf[100];
         int n = 0;
         for (int r = 0; r < cm->rows; r++) {
             for (int c = 0; c < cm->columns; c++) {
                 int bufptr = complex2buf(buf, data[n], data[n + 1], true);
-                buf[bufptr++] = c == cm->columns - 1 ? '\n' : '\t';
+                if (c == cm->columns - 1) {
+                    buf[bufptr++] = '\r';
+                    buf[bufptr++] = '\n';
+                } else {
+                    buf[bufptr++] = '\t';
+                }
                 tb_write(&tb, buf, bufptr);
                 n += 2;
             }
         }
         tb_write_null(&tb);
-        return tb.buf;
+        if (tb.fail) {
+            free(tb.buf);
+            display_error(ERR_INSUFFICIENT_MEMORY, 0);
+            redisplay();
+            return NULL;
+        } else
+            return tb.buf;
     } else {
         // Shouldn't happen: unrecognized data type
         return NULL;
@@ -2255,50 +2286,94 @@ static int ascii2hp(char *dst, const char *src, int maxchars) {
                     goto retry;
                 code = code << 6 | c & 0x3f;
             }
-            // Perform the inverse of the translation in hp2ascii()
-            switch (code) {
-                case 0x00f7: code =   0; break;
-                case 0x00d7: code =   1; break;
-                case 0x221a: code =   2; break;
-                case 0x222b: code =   3; break;
-                case 0x2592: code =   4; break;
-                case 0x03a3: code =   5; break;
-                case 0x25b6: code =   6; break;
-                case 0x03c0: code =   7; break;
-                case 0x00bf: code =   8; break;
-                case 0x2264: code =   9; break;
-                case 0x2265: code =  11; break;
-                case 0x2260: code =  12; break;
-                case 0x21b5: code =  13; break;
-                case 0x2193: code =  14; break;
-                case 0x2192: code =  15; break;
-                case 0x2190: code =  16; break;
-                case 0x03bc: code =  17; break;
-                case 0x00a3: code =  18; break;
-                case 0x00b0: code =  19; break;
-                case 0x00c5: code =  20; break;
-                case 0x00d1: code =  21; break;
-                case 0x00c4: code =  22; break;
-                case 0x2220:
-                case 0x2221: code =  23; break;
-                case 0x1d07: code =  24; break;
-                case 0x00c6: code =  25; break;
-                case 0x2026: code =  26; break;
-                case 0x00d6: code =  28; break;
-                case 0x00dc: code =  29; break;
-                case 0x2022: code =  31; break;
-                case 0x2191: code =  94; break;
-                case 0x251c: code = 127; break;
-                case 0x028f: code = 129; break;
-                default:
-                    // Anything outside of the printable ASCII range or LF or
-                    // ESC is not representable, so we replace it with bullets,
-                    // except for CR, which we skip.
-                    if (code == 13)
+        }
+        // Perform the inverse of the translation in hp2ascii()
+        switch (code) {
+            case 0x00f7: code =   0; break;
+            case 0x00d7: code =   1; break;
+            case 0x221a: code =   2; break;
+            case 0x222b: code =   3; break;
+            case 0x2592: code =   4; break;
+            case 0x03a3: code =   5; break;
+            case 0x25b6: code =   6; break;
+            case 0x03c0: code =   7; break;
+            case 0x00bf: code =   8; break;
+            case 0x2264: code =   9; break;
+            case 0x2265: code =  11; break;
+            case 0x2260: code =  12; break;
+            case 0x21b5: code =  13; break;
+            case 0x2193: code =  14; break;
+            case 0x2192: code =  15; break;
+            case 0x2190: code =  16; break;
+            case 0x03bc: code =  17; break;
+            case 0x00a3: code =  18; break;
+            case 0x00b0: code =  19; break;
+            case 0x00c5: code =  20; break;
+            case 0x00d1: code =  21; break;
+            case 0x00c4: code =  22; break;
+            case 0x2220:
+            case 0x2221: code =  23; break;
+            case 0x1d07: code =  24; break;
+            case 0x00c6: code =  25; break;
+            case 0x2026: code =  26; break;
+            case 0x00d6: code =  28; break;
+            case 0x00dc: code =  29; break;
+            case 0x2022: code =  31; break;
+            case 0x2191: code =  94; break;
+            case 0x251c: code = 127; break;
+            case 0x028f: code = 129; break;
+            // Combining accents: apply them if they fit,
+            // otherwise ignore them
+            case 0x0303:
+                if (dstpos > 0 && dst[dstpos - 1] == 'N') {
+                    code = 21;
+                    dstpos--;
+                } else {
+                    state = 0;
+                    continue;
+                }
+                break;
+            case 0x0308:
+                if (dstpos > 0) {
+                    char c = dst[dstpos - 1];
+                    if (c == 'A') {
+                        code = 22;
+                        dstpos--;
+                    } else if (c == 'O') {
+                        code = 28;
+                        dstpos--;
+                    } else if (c == 'U') {
+                        code = 29;
+                        dstpos--;
+                    } else {
+                        state = 0;
                         continue;
-                    if (code < 32 && code != 10 && code != 27 || code > 126)
-                        c = 31;
-            }
+                    }
+                } else {
+                    state = 0;
+                    continue;
+                }
+                break;
+            case 0x030a: 
+                if (dstpos > 0 && dst[dstpos - 1] == 'A') {
+                    code = 20;
+                    dstpos--;
+                } else {
+                    state = 0;
+                    continue;
+                }
+                break;
+            default:
+                // Anything outside of the printable ASCII range or LF or
+                // ESC is not representable, so we replace it with bullets,
+                // except for CR and combining diacritics, which we skip.
+                if (code == 13 || code >= 0x0300 && code <= 0x03bf) {
+                    state = 0;
+                    continue;
+                }
+                if (code < 32 && code != 10 && code != 27 || code > 126)
+                    c = 31;
+                break;
         }
         switch (state) {
             case 0:
@@ -2543,8 +2618,8 @@ static int parse_scalar(const char *buf, int len, phloat *re, phloat *im, char *
 
 void core_paste(const char *buf) {
     if (flags.f.prgm_mode) {
-        // TODO
-        squeak();
+        display_error(ERR_NOT_YET_IMPLEMENTED, 0);
+        redisplay();
         return;
     } else if (flags.f.alpha_mode) {
         char hpbuf[48];
@@ -2594,8 +2669,6 @@ void core_paste(const char *buf) {
         }
         vartype *v;
         if (rows == 0) {
-            // Empty string
-            squeak();
             return;
         } else if (rows == 1 && cols == 1) {
             // Scalar
@@ -2630,20 +2703,23 @@ void core_paste(const char *buf) {
             int n = rows * cols;
             phloat *data = (phloat *) malloc(n * sizeof(phloat));
             if (data == NULL) {
-                squeak();
+                display_error(ERR_INSUFFICIENT_MEMORY, 0);
+                redisplay();
                 return;
             }
             char *is_string = (char *) malloc(n);
             if (is_string == NULL) {
                 free(data);
-                squeak();
+                display_error(ERR_INSUFFICIENT_MEMORY, 0);
+                redisplay();
                 return;
             }
             char *asciibuf = (char *) malloc(max_cell_size + 1);
             if (asciibuf == NULL) {
                 free(data);
                 free(is_string);
-                squeak();
+                display_error(ERR_INSUFFICIENT_MEMORY, 0);
+                redisplay();
                 return;
             }
             char *hpbuf = (char *) malloc(max_cell_size + 5);
@@ -2651,7 +2727,8 @@ void core_paste(const char *buf) {
                 free(asciibuf);
                 free(data);
                 free(is_string);
-                squeak();
+                display_error(ERR_INSUFFICIENT_MEMORY, 0);
+                redisplay();
                 return;
             }
             int pos = 0;
@@ -2687,7 +2764,8 @@ void core_paste(const char *buf) {
                                     free(data);
                                     free(asciibuf);
                                     free(hpbuf);
-                                    squeak();
+                                    display_error(ERR_INSUFFICIENT_MEMORY, 0);
+                                    redisplay();
                                     return;
                                 }
                                 data = newdata;
@@ -2762,7 +2840,8 @@ void core_paste(const char *buf) {
                 if (rm == NULL) {
                     free(data);
                     free(is_string);
-                    squeak();
+                    display_error(ERR_INSUFFICIENT_MEMORY, 0);
+                    redisplay();
                     return;
                 }
                 rm->array = (realmatrix_data *)
@@ -2771,7 +2850,8 @@ void core_paste(const char *buf) {
                     free(rm);
                     free(data);
                     free(is_string);
-                    squeak();
+                    display_error(ERR_INSUFFICIENT_MEMORY, 0);
+                    redisplay();
                     return;
                 }
                 rm->type = TYPE_REALMATRIX;
@@ -2786,7 +2866,8 @@ void core_paste(const char *buf) {
                                 malloc(sizeof(vartype_complexmatrix));
                 if (cm == NULL) {
                     free(data);
-                    squeak();
+                    display_error(ERR_INSUFFICIENT_MEMORY, 0);
+                    redisplay();
                     return;
                 }
                 cm->array = (complexmatrix_data *)
@@ -2794,7 +2875,8 @@ void core_paste(const char *buf) {
                 if (cm->array == NULL) {
                     free(cm);
                     free(data);
-                    squeak();
+                    display_error(ERR_INSUFFICIENT_MEMORY, 0);
+                    redisplay();
                     return;
                 }
                 cm->type = TYPE_COMPLEXMATRIX;
