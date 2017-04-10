@@ -16,6 +16,8 @@
  *****************************************************************************/
 
 #include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
 
 #include "core_main.h"
 #include "core_commands2.h"
@@ -1986,22 +1988,214 @@ void core_import_programs(int (*progress_report)(const char *)) {
     flags.f.normal_print = saved_normal;
 }
 
-void core_copy(char *buf, int buflen) {
-    int len = vartype2string(reg_x, buf, buflen - 1, MAX_MANT_DIGITS);
-    buf[len] = 0;
-    if (reg_x->type == TYPE_REAL || reg_x->type == TYPE_COMPLEX) {
-        /* Convert small-caps 'E' to regular 'e' */
-        while (--len >= 0)
-            if (buf[len] == 24)
-                buf[len] = 'e';
+static int real2buf(char *buf, phloat x) {
+    int bufptr = phloat2string(x, buf, 49,
+            2, 0, 3, flags.f.thousands_separators, MAX_MANT_DIGITS);
+    /* Convert small-caps 'E' to regular 'e' */
+    for (int i = 0; i < bufptr; i++)
+        if (buf[i] == 24)
+            buf[i] = 'e';
+    return bufptr;
+}
+
+static int complex2buf(char *buf, phloat re, phloat im, bool always_rect) {
+    bool polar = !always_rect && flags.f.polar;
+    phloat x, y;
+    if (polar) {
+        generic_r2p(re, im, &x, &y);
+        if (p_isinf(x))
+            x = POS_HUGE_PHLOAT;
+    } else {
+        x = re;
+        y = im;
+    }
+    int bufptr = phloat2string(x, buf, 99, 2, 0, 3,
+                flags.f.thousands_separators, MAX_MANT_DIGITS);
+    if (polar) {
+        string2buf(buf, 99, &bufptr, " \342\210\240 ", 5);
+    } else {
+        if (y >= 0)
+            buf[bufptr++] = '+';
+    }
+    bufptr += phloat2string(y, buf + bufptr, 99 - bufptr, 2, 0, 3,
+                flags.f.thousands_separators, MAX_MANT_DIGITS);
+    if (!polar)
+        buf[bufptr++] = 'i';
+    /* Convert small-caps 'E' to regular 'e' */
+    for (int i = 0; i < bufptr; i++)
+        if (buf[i] == 24)
+            buf[i] = 'e';
+    return bufptr;
+}
+
+char *core_copy() {
+    if (flags.f.prgm_mode) {
+        textbuf tb;
+        tb.buf = NULL;
+        tb.size = 0;
+        tb.capacity = 0;
+        tb.fail = false;
+        tb_print_current_program(&tb);
+        tb_write_null(&tb);
+        if (tb.fail) {
+            free(tb.buf);
+            display_error(ERR_INSUFFICIENT_MEMORY, 0);
+            redisplay();
+            return NULL;
+        } else
+            return tb.buf;
+    } else if (flags.f.alpha_mode) {
+        char *buf = (char *) malloc(5 * reg_alpha_length + 1);
+        int bufptr = hp2ascii(buf, reg_alpha, reg_alpha_length);
+        buf[bufptr] = 0;
+        return buf;
+    } else if (reg_x->type == TYPE_REAL) {
+        char *buf = (char *) malloc(50);
+        int bufptr = real2buf(buf, ((vartype_real *) reg_x)->x);
+        buf[bufptr] = 0;
+        return buf;
+    } else if (reg_x->type == TYPE_COMPLEX) {
+        char *buf = (char *) malloc(100);
+        vartype_complex *c = (vartype_complex *) reg_x;
+        int bufptr = complex2buf(buf, c->re, c->im, false);
+        buf[bufptr] = 0;
+        return buf;
+    } else if (reg_x->type == TYPE_STRING) {
+        vartype_string *s = (vartype_string *) reg_x;
+        char *buf = (char *) malloc(5 * s->length + 1);
+        int bufptr = hp2ascii(buf, s->text, s->length);
+        buf[bufptr] = 0;
+        return buf;
+    } else if (reg_x->type == TYPE_REALMATRIX) {
+        vartype_realmatrix *rm = (vartype_realmatrix *) reg_x;
+        phloat *data = rm->array->data;
+        char *is_string = rm->array->is_string;
+        textbuf tb;
+        tb.buf = NULL;
+        tb.size = 0;
+        tb.capacity = 0;
+        tb.fail = false;
+        char buf[50];
+        int n = 0;
+        for (int r = 0; r < rm->rows; r++) {
+            for (int c = 0; c < rm->columns; c++) {
+                int bufptr;
+                if (is_string[n])
+                    bufptr = hp2ascii(buf, phloat_text(data[n]), phloat_length(data[n]));
+                else
+                    bufptr = real2buf(buf, data[n]);
+                if (c == rm->columns - 1) {
+                    buf[bufptr++] = '\r';
+                    buf[bufptr++] = '\n';
+                } else {
+                    buf[bufptr++] = '\t';
+                }
+                tb_write(&tb, buf, bufptr);
+                n++;
+            }
+        }
+        tb_write_null(&tb);
+        if (tb.fail) {
+            free(tb.buf);
+            display_error(ERR_INSUFFICIENT_MEMORY, 0);
+            redisplay();
+            return NULL;
+        } else
+            return tb.buf;
+    } else if (reg_x->type == TYPE_COMPLEXMATRIX) {
+        vartype_complexmatrix *cm = (vartype_complexmatrix *) reg_x;
+        phloat *data = cm->array->data;
+        textbuf tb;
+        tb.buf = NULL;
+        tb.size = 0;
+        tb.capacity = 0;
+        tb.fail = false;
+        char buf[100];
+        int n = 0;
+        for (int r = 0; r < cm->rows; r++) {
+            for (int c = 0; c < cm->columns; c++) {
+                int bufptr = complex2buf(buf, data[n], data[n + 1], true);
+                if (c == cm->columns - 1) {
+                    buf[bufptr++] = '\r';
+                    buf[bufptr++] = '\n';
+                } else {
+                    buf[bufptr++] = '\t';
+                }
+                tb_write(&tb, buf, bufptr);
+                n += 2;
+            }
+        }
+        tb_write_null(&tb);
+        if (tb.fail) {
+            free(tb.buf);
+            display_error(ERR_INSUFFICIENT_MEMORY, 0);
+            redisplay();
+            return NULL;
+        } else
+            return tb.buf;
+    } else {
+        // Shouldn't happen: unrecognized data type
+        return NULL;
     }
 }
 
-static bool is_number_char(char c) {
-    return (c >= '0' && c <= '9')
-        || c == '.' || c == ','
-        || c == '+' || c == '-'
-        || c == 'e' || c == 'E' || c == 24;
+static int scan_number(const char *buf, int len, int pos) {
+    // 0: before number
+    // 1: in mantissa, before decimal
+    // 2: in mantissa, after decimal
+    // 3: after E
+    // 4: in exponent
+    int state = 0;
+    char dec = flags.f.decimal_point ? '.' : ',';
+    char sep = flags.f.decimal_point ? ',' : '.';
+    for (int p = pos; p < len; p++) {
+        char c = buf[p];
+        switch (state) {
+            case 0:
+                if ((c >= '0' && c <= '9')
+                        || c == '+' || c == '-'
+                        || c == sep)
+                    state = 1;
+                else if (c == dec)
+                    state = 2;
+                else if (c == 'e' || c == 'E' || c == 24)
+                    state = 3;
+                else
+                    return p;
+                break;
+            case 1:
+                if ((c >= '0' && c <= '9') || c == sep)
+                    /* state = 1 */;
+                else if (c == dec)
+                    state = 2;
+                else if (c == 'e' || c == 'E' || c == 24)
+                    state = 3;
+                else
+                    return p;
+                break;
+            case 2:
+                if (c >= '0' && c <= '9')
+                    /* state = 2 */;
+                else if (c == 'e' || c == 'E' || c == 24)
+                    state = 3;
+                else
+                    return p;
+                break;
+            case 3:
+                if ((c >= '0' && c <= '9')
+                        || c == '+' || c == '-')
+                    state = 4;
+                else
+                    return p;
+            case 4:
+                if (c >= '0' && c <= '9')
+                    /* state = 4 */;
+                else
+                    return p;
+                break;
+        }
+    }
+    return len;
 }
 
 static bool parse_phloat(const char *p, int len, phloat *res) {
@@ -2045,109 +2239,315 @@ static bool parse_phloat(const char *p, int len, phloat *res) {
         return false;
 }
 
-void core_paste(const char *buf) {
-    phloat re, im;
-    int i, s1, e1, s2, e2;
-    vartype *v;
-
-    int base = get_base();
-    if (base != 10) {
-        int bpd = base == 2 ? 1 : base == 8 ? 3 : 4;
-        int bits = 0;
-        bool neg = false;
-        int8 n = 0;
-        i = 0;
-        while (buf[i] == ' ')
-            i++;
-        if (buf[i] == '-') {
-            neg = true;
-            i++;
-        }
-        while (bits < 36) {
-            char c = buf[i++];
-            if (c == 0)
-                break;
-            int d;
-            if (base == 16) {
-                if (c >= '0' && c <= '9')
-                    d = c - '0';
-                else if (c >= 'A' && c <= 'F')
-                    d = c - 'A' + 10;
-                else if (c >= 'a' && c <= 'f')
-                    d = c - 'a' + 10;
-                else
-                    break;
+/* NOTE: The destination buffer should be able to store maxchars + 4
+ * characters, because of how we parse [LF] and [ESC].
+ */
+static int ascii2hp(char *dst, const char *src, int maxchars) {
+    int srcpos = 0, dstpos = 0;
+    // state machine for detecting [LF] and [ESC]:
+    // 0: ''
+    // 1: '['
+    // 2: '[L'
+    // 3: '[LF'
+    // 4: '[E'
+    // 5: '[ES'
+    // 6: '[ESC'
+    int state = 0;
+    bool afterCR = false;
+    while (dstpos < maxchars + (state == 0 ? 1 : 4)) {
+        char c = src[srcpos++];
+        retry:
+        if (c == 0)
+            break;
+        int code;
+        if ((c & 0x80) == 0) {
+            code = c;
+        } else if ((c & 0xc0) == 0x80) {
+            // Unexpected continuation byte
+            continue;
+        } else {
+            int len;
+            if ((c & 0xe0) == 0xc0) {
+                len = 1;
+                code = c & 0x1f;
+            } else if ((c & 0xf0) == 0xe0) {
+                len = 2;
+                code = c & 0x0f;
+            } else if ((c & 0xf8) == 0xf0) {
+                len = 3;
+                code = c & 0x07;
             } else {
-                if (c >= 0 && c < '0' + base)
-                    d = c - '0';
-                else
-                    break;
+                // Invalid UTF-8
+                continue;
             }
-            n = n << bpd | d;
-            bits += bpd;
+            while (len-- > 0) {
+                c = src[srcpos++];
+                if ((c & 0xc0) != 0x80)
+                    // Unexpected non-continuation byte
+                    goto retry;
+                code = code << 6 | c & 0x3f;
+            }
         }
-        if (bits == 0)
-            goto paste_string;
-        if (neg)
-            n = -n;
-        if ((n & LL(0x800000000)) == 0)
-            n &= LL(0x7ffffffff);
-        else
-            n |= LL(0xfffffff000000000);
-        v = new_real((phloat) n);
-        goto paste;
+        // OK, we have a code.
+        // Next, we translate CR to LF, but whenever that happens,
+        // any immediately following LF should be dropped
+        if (code == 13) {
+            code = 10;
+            afterCR = true;
+        } else {
+            bool prevAfterCR = afterCR;
+            afterCR = false;
+            if (prevAfterCR && code == 10)
+                continue;
+        }
+        // Perform the inverse of the translation in hp2ascii()
+        switch (code) {
+            case 0x00f7: code =   0; break;
+            case 0x00d7: code =   1; break;
+            case 0x221a: code =   2; break;
+            case 0x222b: code =   3; break;
+            case 0x2592: code =   4; break;
+            case 0x03a3: code =   5; break;
+            case 0x25b6: code =   6; break;
+            case 0x03c0: code =   7; break;
+            case 0x00bf: code =   8; break;
+            case 0x2264: code =   9; break;
+            case 0x2265: code =  11; break;
+            case 0x2260: code =  12; break;
+            case 0x21b5: code =  13; break;
+            case 0x2193: code =  14; break;
+            case 0x2192: code =  15; break;
+            case 0x2190: code =  16; break;
+            case 0x03bc: code =  17; break;
+            case 0x00a3: code =  18; break;
+            case 0x00b0: code =  19; break;
+            case 0x00c5: code =  20; break;
+            case 0x00d1: code =  21; break;
+            case 0x00c4: code =  22; break;
+            case 0x2220:
+            case 0x2221: code =  23; break;
+            case 0x1d07: code =  24; break;
+            case 0x00c6: code =  25; break;
+            case 0x2026: code =  26; break;
+            case 0x00d6: code =  28; break;
+            case 0x00dc: code =  29; break;
+            case 0x2022: code =  31; break;
+            case 0x2191: code =  94; break;
+            case 0x251c: code = 127; break;
+            case 0x028f: code = 129; break;
+            // Combining accents: apply them if they fit,
+            // otherwise ignore them
+            case 0x0303:
+                if (dstpos > 0 && dst[dstpos - 1] == 'N') {
+                    code = 21;
+                    dstpos--;
+                } else {
+                    state = 0;
+                    continue;
+                }
+                break;
+            case 0x0308:
+                if (dstpos > 0) {
+                    char k = dst[dstpos - 1];
+                    if (k == 'A') {
+                        code = 22;
+                        dstpos--;
+                    } else if (k == 'O') {
+                        code = 28;
+                        dstpos--;
+                    } else if (k == 'U') {
+                        code = 29;
+                        dstpos--;
+                    } else {
+                        state = 0;
+                        continue;
+                    }
+                } else {
+                    state = 0;
+                    continue;
+                }
+                break;
+            case 0x030a: 
+                if (dstpos > 0 && dst[dstpos - 1] == 'A') {
+                    code = 20;
+                    dstpos--;
+                } else {
+                    state = 0;
+                    continue;
+                }
+                break;
+            default:
+                // Anything outside of the printable ASCII range or LF or
+                // ESC is not representable, so we replace it with bullets,
+                // except for combining diacritics, which we skip.
+                if (code >= 0x0300 && code <= 0x03bf) {
+                    state = 0;
+                    continue;
+                }
+                if (code < 32 && code != 10 && code != 27 || code > 126)
+                    code = 31;
+                break;
+        }
+        switch (state) {
+            case 0:
+                if (code == '[')
+                    state = 1;
+                break;
+            case 1:
+                if (code == 'L')
+                    state = 2;
+                else if (code == 'E')
+                    state = 4;
+                else
+                    state = 0;
+                break;
+            case 2:
+                if (code == 'F')
+                    state = 3;
+                else
+                    state = 0;
+                break;
+            case 3:
+                if (code == ']') {
+                    code = 138;
+                    dstpos -= 3;
+                }
+                state = 0;
+                break;
+            case 4:
+                if (code == 'S')
+                    state = 5;
+                else
+                    state = 0;
+                break;
+            case 5:
+                if (code == 'C')
+                    state = 6;
+                else
+                    state = 0;
+                break;
+            case 6:
+                if (code == ']') {
+                    code = 27;
+                    dstpos -= 4;
+                }
+                state = 0;
+                break;
+        }
+        dst[dstpos++] = (char) code;
     }
+    return dstpos > maxchars ? maxchars : dstpos;
+}
 
-    /* Try matching " %g i %g " */
-    i = 0;
+static vartype *parse_base(const char *buf, int len) {
+    int base = get_base();
+    if (base == 10)
+        return NULL;
+    int bpd = base == 2 ? 1 : base == 8 ? 3 : 4;
+    int bits = 0;
+    bool neg = false;
+    int8 n = 0;
+    int i = 0;
     while (buf[i] == ' ')
         i++;
-    s1 = i;
-    while (is_number_char(buf[i]))
+    if (buf[i] == '-') {
+        neg = true;
         i++;
+    }
+    while (bits < 36) {
+        char c = buf[i];
+        if (c == 0)
+            break;
+        i++;
+        int d;
+        if (base == 16) {
+            if (c >= '0' && c <= '9')
+                d = c - '0';
+            else if (c >= 'A' && c <= 'F')
+                d = c - 'A' + 10;
+            else if (c >= 'a' && c <= 'f')
+                d = c - 'a' + 10;
+            else
+                return NULL;
+        } else {
+            if (c >= 0 && c < '0' + base)
+                d = c - '0';
+            else
+                return NULL;
+        }
+        n = n << bpd | d;
+        bits += bpd;
+    }
+    while (buf[i] == ' ')
+        i++;
+    if (buf[i] != 0)
+        return NULL;
+    if (bits == 0)
+        return NULL;
+    if (neg)
+        n = -n;
+    if ((n & LL(0x800000000)) == 0)
+        n &= LL(0x7ffffffff);
+    else
+        n |= LL(0xfffffff000000000);
+    return new_real((phloat) n);
+}
+
+static int parse_scalar(const char *buf, int len, phloat *re, phloat *im, char *s, int *slen) {
+    int i, s1, e1, s2, e2;
+    bool polar = false;
+
+    /* Try matching " %g <angle> %g " */
+    i = 0;
+    while (i < len && buf[i] == ' ')
+        i++;
+    s1 = i;
+    i = scan_number(buf, len, i);
     e1 = i;
     if (e1 == s1)
         goto attempt_2;
-    while (buf[i] == ' ')
+    while (i < len && buf[i] == ' ')
         i++;
-    if (buf[i] == 'i')
+    if (i < len && buf[i] == 23)
         i++;
     else
         goto attempt_2;
-    while (buf[i] == ' ')
+    while (i < len && buf[i] == ' ')
         i++;
     s2 = i;
-    while (is_number_char(buf[i]))
-        i++;
+    i = scan_number(buf, len, i);
     e2 = i;
     if (e2 == s2)
         goto attempt_2;
+    while (i < len && buf[i] == ' ')
+        i++;
+    if (i < len)
+        goto attempt_2;
+    polar = true;
     goto finish_complex;
 
-    /* Try matching " %g + %g i " */
+    /* Try matching " %g[+-]%gi " */
     attempt_2:
     i = 0;
-    while (buf[i] == ' ')
+    while (i < len && buf[i] == ' ')
         i++;
     s1 = i;
-    while (is_number_char(buf[i]))
-        i++;
+    i = scan_number(buf, len, i);
     e1 = i;
     if (e1 == s1)
         goto attempt_3;
-    while (buf[i] == ' ')
-        i++;
-    if (buf[i] == '+')
+    s2 = i;
+    i = scan_number(buf, len, i);
+    e2 = i;
+    if (e2 == s2)
+        goto attempt_3;
+    if (i < len && (buf[i] == 'i' || buf[i] == 'I'))
         i++;
     else
         goto attempt_3;
-    while (buf[i] == ' ')
+    while (i < len && buf[i] == ' ')
         i++;
-    s2 = i;
-    while (is_number_char(buf[i]))
-        i++;
-    e2 = i;
-    if (e2 == s2)
+    if (i < len)
         goto attempt_3;
     goto finish_complex;
 
@@ -2158,68 +2558,359 @@ void core_paste(const char *buf) {
      */
     attempt_3:
     i = 0;
-    while (buf[i] == ' ')
+    while (i < len && buf[i] == ' ')
         i++;
-    if (buf[i] == '(')
+    if (i < len && buf[i] == '(')
         i++;
     else
         goto attempt_4;
-    while (buf[i] == ' ')
+    while (i < len && buf[i] == ' ')
         i++;
     s1 = i;
-    while (is_number_char(buf[i]))
-        i++;
+    i = scan_number(buf, len, i);
     e1 = i;
     if (e1 == s1)
         goto attempt_4;
-    while (buf[i] == ' ')
+    while (i < len && buf[i] == ' ')
         i++;
-    if (buf[i] == ',' || buf[i] == ':' || buf[i] == ';')
+    if (i < len || (buf[i] == ',' || buf[i] == ':' || buf[i] == ';'))
         i++;
     else
         goto attempt_4;
-    while (buf[i] == ' ')
+    while (i < len && buf[i] == ' ')
         i++;
     s2 = i;
-    while (is_number_char(buf[i]))
-        i++;
+    i = scan_number(buf, len, i);
     e2 = i;
     if (e2 == s2)
         goto attempt_4;
+    while (i < len && buf[i] == ' ')
+        i++;
+    if (i < len && buf[i] == ')')
+        i++;
+    else
+        goto attempt_4;
+    while (i < len && buf[i] == ' ')
+        i++;
+    if (i < len)
+        goto attempt_4;
+
     finish_complex:
-    if (!parse_phloat(buf + s1, e1 - s1, &re))
+    if (!parse_phloat(buf + s1, e1 - s1, re))
         goto attempt_4;
-    if (!parse_phloat(buf + s2, e2 - s2, &im))
+    if (!parse_phloat(buf + s2, e2 - s2, im))
         goto attempt_4;
-    v = new_complex(re, im);
-    goto paste;
+    if (polar)
+        generic_p2r(*re, *im, re, im);
+    return TYPE_COMPLEX;
 
     /* Try matching " %g " */
     attempt_4:
     i = 0;
-    while (buf[i] == ' ')
+    while (i < len && buf[i] == ' ')
         i++;
     s1 = i;
-    while (is_number_char(buf[i]))
-        i++;
+    i = scan_number(buf, len, i);
     e1 = i;
-    if (e1 != s1 && parse_phloat(buf + s1, e1 - s1, &re))
-        v = new_real(re);
-    else {
-        paste_string:
-        int len = 0;
-        while (len < 6 && buf[len] != 0)
-            len++;
-        v = new_string(buf, len);
-    }
+    if (e1 == s1)
+        goto finish_string;
+    while (i < len && buf[i] == ' ')
+        i++;
+    if (i < len)
+        goto finish_string;
+    if (parse_phloat(buf + s1, e1 - s1, re))
+        return TYPE_REAL;
 
-    paste:
-    if (v == NULL) {
-        squeak();
+    finish_string:
+    if (len > 6)
+        len = 6;
+    memcpy(s, buf, len);
+    *slen = len;
+    return TYPE_STRING;
+}
+
+void core_paste(const char *buf) {
+    if (flags.f.prgm_mode) {
+        display_error(ERR_NOT_YET_IMPLEMENTED, 0);
+        redisplay();
         return;
+    } else if (flags.f.alpha_mode) {
+        char hpbuf[48];
+        int len = ascii2hp(hpbuf, buf, 44);
+        int tlen = len + reg_alpha_length;
+        if (tlen > 44) {
+            int off = tlen - 44;
+            memmove(reg_alpha, reg_alpha + off, off);
+            reg_alpha_length -= off;
+        }
+        memcpy(reg_alpha + reg_alpha_length, hpbuf, len);
+        reg_alpha_length += len;
     } else {
-        if (!flags.f.prgm_mode)
-            mode_number_entry = false;
+        int rows = 0, cols = 0;
+        int col = 1;
+        int max_cell_size = 0;
+        int cell_size = 0;
+        int pos = 0;
+        char lastchar, c = 0;
+        while (true) {
+            lastchar = c;
+            c = buf[pos++];
+            if (c == 0)
+                break;
+            if (c == '\r') {
+                c = '\n';
+                if (buf[pos] == '\n')
+                    pos++;
+            }
+            if (c == '\n') {
+                rows++;
+                if (cols < col)
+                    cols = col;
+                col = 1;
+                goto check_cell_size;
+            } else if (c == '\t') {
+                col++;
+                check_cell_size:
+                if (max_cell_size < cell_size)
+                    max_cell_size = cell_size;
+                cell_size = 0;
+            } else {
+                cell_size++;
+            }
+        }
+        if (lastchar != 0 && lastchar != '\n') {
+            rows++;
+            if (cols < col)
+                cols = col;
+            if (max_cell_size < cell_size)
+                max_cell_size = cell_size;
+        }
+        vartype *v;
+        if (rows == 0) {
+            return;
+        } else if (rows == 1 && cols == 1) {
+            // Scalar
+            int len = strlen(buf);
+            char *asciibuf = (char *) malloc(len + 1);
+            strcpy(asciibuf, buf);
+            if (asciibuf[len - 1] == '\n')
+                asciibuf[--len] = 0;
+            char *hpbuf = (char *) malloc(len + 4);
+            len = ascii2hp(hpbuf, asciibuf, len);
+            free(asciibuf);
+            v = parse_base(hpbuf, len);
+            if (v == NULL) {
+                phloat re, im;
+                char s[6];
+                int slen;
+                int type = parse_scalar(hpbuf, len, &re, &im, s, &slen);
+                switch (type) {
+                    case TYPE_REAL:
+                        v = new_real(re);
+                        break;
+                    case TYPE_COMPLEX:
+                        v = new_complex(re, im);
+                        break;
+                    case TYPE_STRING:
+                        v = new_string(s, slen);
+                        break;
+                }
+            }
+        } else {
+            // Matrix
+            int n = rows * cols;
+            phloat *data = (phloat *) malloc(n * sizeof(phloat));
+            if (data == NULL) {
+                display_error(ERR_INSUFFICIENT_MEMORY, 0);
+                redisplay();
+                return;
+            }
+            char *is_string = (char *) malloc(n);
+            if (is_string == NULL) {
+                free(data);
+                display_error(ERR_INSUFFICIENT_MEMORY, 0);
+                redisplay();
+                return;
+            }
+            char *asciibuf = (char *) malloc(max_cell_size + 1);
+            if (asciibuf == NULL) {
+                free(data);
+                free(is_string);
+                display_error(ERR_INSUFFICIENT_MEMORY, 0);
+                redisplay();
+                return;
+            }
+            char *hpbuf = (char *) malloc(max_cell_size + 5);
+            if (hpbuf == NULL) {
+                free(asciibuf);
+                free(data);
+                free(is_string);
+                display_error(ERR_INSUFFICIENT_MEMORY, 0);
+                redisplay();
+                return;
+            }
+            int pos = 0;
+            int spos = 0;
+            int p = 0, row = 0, col = 0;
+            while (row < rows) {
+                c = buf[pos++];
+                if (c == 0 || c == '\t' || c == '\r' || c == '\n') {
+                    int cellsize = pos - spos - 1;
+                    memcpy(asciibuf, buf + spos, cellsize);
+                    if (c == '\r') {
+                        c = '\n';
+                        if (buf[pos] == '\n')
+                            pos++;
+                    }
+                    spos = pos;
+                    asciibuf[cellsize] = 0;
+                    int hplen = ascii2hp(hpbuf, asciibuf, cellsize);
+                    phloat re, im;
+                    char s[6];
+                    int slen;
+                    int type = parse_scalar(hpbuf, hplen, &re, &im, s, &slen);
+                    if (is_string != NULL) {
+                        switch (type) {
+                            case TYPE_REAL:
+                                data[p] = re;
+                                is_string[p] = 0;
+                                break;
+                            case TYPE_COMPLEX:
+                                for (int i = 0; i < p; i++)
+                                    if (is_string[i])
+                                        data[i] = 0;
+                                free(is_string);
+                                is_string = NULL;
+                                phloat *newdata;
+                                newdata = (phloat *) realloc(data, 2 * n * sizeof(phloat));
+                                if (newdata == NULL) {
+                                    free(data);
+                                    free(asciibuf);
+                                    free(hpbuf);
+                                    display_error(ERR_INSUFFICIENT_MEMORY, 0);
+                                    redisplay();
+                                    return;
+                                }
+                                data = newdata;
+                                for (int i = p - 1; i >= 0; i--) {
+                                    data[i * 2] = data[i];
+                                    data[i * 2 + 1] = 0;
+                                }
+                                p *= 2;
+                                data[p] = re;
+                                data[p + 1] = im;
+                                goto finish_complex_cell;
+                            case TYPE_STRING:
+                                if (slen == 0) {
+                                    data[p] = 0;
+                                    is_string[p] = 0;
+                                } else {
+                                    memcpy(phloat_text(data[p]), s, slen);
+                                    phloat_length(data[p]) = slen;
+                                    is_string[p] = 1;
+                                }
+                                break;
+                        }
+                        p++;
+                        col++;
+                        if (c == 0 || c == '\n') {
+                            while (col++ < cols) {
+                                data[p] = 0;
+                                is_string[p] = 0;
+                                p++;
+                            }
+                            col = 0;
+                            row++;
+                        }
+                    } else {
+                        switch (type) {
+                            case TYPE_REAL:
+                                data[p] = re;
+                                data[p + 1] = 0;
+                                break;
+                            case TYPE_COMPLEX:
+                                data[p] = re;
+                                data[p + 1] = im;
+                                break;
+                            case TYPE_STRING:
+                                data[p] = 0;
+                                data[p + 1] = 0;
+                                break;
+                        }
+                        finish_complex_cell:
+                        p += 2;
+                        col++;
+                        if (c == 0 || c == '\n') {
+                            while (col++ < cols) {
+                                data[p] = 0;
+                                data[p + 1] = 0;
+                                p += 2;
+                            }
+                            col = 0;
+                            row++;
+                        }
+                    }
+                }
+                if (c == 0)
+                    break;
+            }
+
+            free(asciibuf);
+            free(hpbuf);
+            if (is_string != NULL) {
+                vartype_realmatrix *rm = (vartype_realmatrix *)
+                                malloc(sizeof(vartype_realmatrix));
+                if (rm == NULL) {
+                    free(data);
+                    free(is_string);
+                    display_error(ERR_INSUFFICIENT_MEMORY, 0);
+                    redisplay();
+                    return;
+                }
+                rm->array = (realmatrix_data *)
+                                malloc(sizeof(realmatrix_data));
+                if (rm->array == NULL) {
+                    free(rm);
+                    free(data);
+                    free(is_string);
+                    display_error(ERR_INSUFFICIENT_MEMORY, 0);
+                    redisplay();
+                    return;
+                }
+                rm->type = TYPE_REALMATRIX;
+                rm->rows = rows;
+                rm->columns = cols;
+                rm->array->data = data;
+                rm->array->is_string = is_string;
+                rm->array->refcount = 1;
+                v = (vartype *) rm;
+            } else {
+                vartype_complexmatrix *cm = (vartype_complexmatrix *)
+                                malloc(sizeof(vartype_complexmatrix));
+                if (cm == NULL) {
+                    free(data);
+                    display_error(ERR_INSUFFICIENT_MEMORY, 0);
+                    redisplay();
+                    return;
+                }
+                cm->array = (complexmatrix_data *)
+                                malloc(sizeof(complexmatrix_data));
+                if (cm->array == NULL) {
+                    free(cm);
+                    free(data);
+                    display_error(ERR_INSUFFICIENT_MEMORY, 0);
+                    redisplay();
+                    return;
+                }
+                cm->type = TYPE_COMPLEXMATRIX;
+                cm->rows = rows;
+                cm->columns = cols;
+                cm->array->data = data;
+                cm->array->refcount = 1;
+                v = (vartype *) cm;
+            }
+        }
+        mode_number_entry = false;
         recall_result(v);
         flags.f.stack_lift_disable = 0;
         flags.f.message = 0;
