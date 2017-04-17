@@ -15,6 +15,7 @@
  * along with this program; if not, see http://www.gnu.org/licenses/.
  *****************************************************************************/
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
@@ -2029,6 +2030,10 @@ static int complex2buf(char *buf, phloat re, phloat im, bool always_rect) {
 }
 
 char *core_copy() {
+    if (mode_interruptible != NULL)
+        stop_interruptible();
+    set_running(false);
+
     if (flags.f.prgm_mode) {
         textbuf tb;
         tb.buf = NULL;
@@ -2437,6 +2442,56 @@ static int ascii2hp(char *dst, const char *src, int maxchars) {
     return dstpos > maxchars ? maxchars : dstpos;
 }
 
+typedef struct {
+    char len;
+    char equiv;
+    char text[8];
+} text_alias;
+
+static text_alias aliases[] = {
+    { 5,    2, "\\sqrt"   },
+    { 4,    3, "\\int"    },
+    { 6,    4, "\\gray1"  },
+    { 6,    5, "\\Sigma"  },
+    { 3,    7, "\\pi"     },
+    { 2,    9, "<="       },
+    { 2,   11, ">="       },
+    { 2,   12, "!="       },
+    { 6,   23, "\\angle"  },
+    { 4,   26, "\\esc"    },
+    { 6,   30, "\\gray2"  },
+    { 7,   31, "\\bullet" },
+    { 2, '\\', "\\\\"     },
+    { 2,  127, "|-"       },
+    { 3,  138, "\\LF"     },
+    { 1,   17, "\265"     },
+    { 0,    0, ""         }
+};
+
+static int text2hp(char *buf, int len) {
+    int srcpos = 0;
+    int dstpos = 0;
+    while (srcpos < len) {
+        int al;
+        for (int i = 0; (al = aliases[i].len) != 0; i++) {
+            if (srcpos + al > len)
+                continue;
+            if (strncmp(buf + srcpos, aliases[i].text, al) == 0) {
+                buf[dstpos++] = aliases[i].equiv;
+                srcpos += al;
+                break;
+            }
+        }
+        if (al == 0) {
+            char c = buf[srcpos++];
+            if (isspace(c))
+                c = ' ';
+            buf[dstpos++] = c;
+        }
+    }
+    return dstpos;
+}
+
 static vartype *parse_base(const char *buf, int len) {
     int base = get_base();
     if (base == 10)
@@ -2643,11 +2698,227 @@ static int parse_scalar(const char *buf, int len, phloat *re, phloat *im, char *
     return TYPE_STRING;
 }
 
+static bool nexttoken(const char *buf, int pos, int len, int *tok_start, int *tok_end) {
+    bool have_token = false;
+    while (pos < len) {
+        char c = buf[pos];
+        if (have_token) {
+            if (c == ' ') {
+                *tok_end = pos;
+                return true;
+            }
+        } else {
+            if (c != ' ') {
+                *tok_start = pos;
+                have_token = true;
+            }
+        }
+        pos++;
+    }
+    *tok_end = pos;
+    return have_token;
+}
+
+static void paste_programs(const char *buf) {
+    bool after_end = true;
+    bool done = false;
+    int pos = 0;
+    char asciibuf[1024];
+    char hpbuf[1027];
+    int cmd;
+    arg_struct arg;
+
+    while (!done) {
+        int end = pos;
+        char c;
+        while (c = buf[end], c != 0 && c != '\r' && c != '\n' && c != '\f')
+            end++;
+        if (c == 0)
+            done = true;
+        if (end == pos)
+            goto line_done;
+        // We now have a line between 'pos' and 'end', length 'end - pos'.
+        // Convert to HP-42S encoding:
+        int hpend;
+        strncpy(asciibuf, buf + pos, end - pos);
+        asciibuf[end - pos] = 0;
+        hpend = ascii2hp(hpbuf, asciibuf, 1023);
+        // Perform additional translations, to support various 42S-to-text
+        // and 41-to-text conversion schemes:
+        hpend = text2hp(hpbuf, hpend);
+        // Skip leading whitespace and line number.
+        int hppos;
+        hppos = 0;
+        while (hpbuf[hppos] == ' ')
+            hppos++;
+        int prev_hppos;
+        prev_hppos = hppos;
+        while (hppos < hpend && (c = hpbuf[hppos], c >= '0' && c <= '9'))
+            hppos++;
+        if (prev_hppos == hppos)
+            // No line number? Not acceptable.
+            goto line_done;
+        // Line number should be followed by a run of one or more characters,
+        // which may be spaces, greater-than signs, or solid right-pointing
+        // triangle (a.k.a. goose), but all but one of those characters must
+        // be spaces
+        bool goose;
+        goose = false;
+        prev_hppos = hppos;
+        while (hppos < hpend) {
+            c = hpbuf[hppos];
+            if (c == '>' || c == 6) {
+                if (goose)
+                    break;
+                else
+                    goose = 1;
+            } else if (c != ' ')
+                break;
+            hppos++;
+        }
+        if (hppos == prev_hppos)
+            // No space following line number? Not acceptable.
+            goto line_done;
+        // Now hppos should be pointing at the first character of the
+        // command.
+        if (hppos == hpend)
+            // Nothing after the line number
+            goto line_done;
+        if (hppos < hpend - 1 && hpbuf[hppos] == 127 && hpbuf[hppos + 1] == '"') {
+            // Appended string
+            hpbuf[hppos + 1] = 127;
+            goto do_string;
+        } else if (hppos < hpend && hpbuf[hppos] == '"') {
+            // Non-appended string
+            do_string:
+            hppos++;
+            // String literals can be up to 15 characters long, and they
+            // can contain double quotes. We scan forward for up to 15
+            // chars, and the final double quote we find is considered the
+            // end of the string; any intervening double quotes are considered
+            // to be part of the string.
+            int last_quote = -1;
+            int i;
+            for (i = 0; i < 16; i++) {
+                if (hppos + i == hpend)
+                    break;
+                c = hpbuf[hppos + i];
+                if (c == '"')
+                    last_quote = i;
+            }
+            if (last_quote == -1)
+                // No closing quote? Fishy, but let's just grab 15
+                // characters and hope for the best.
+                last_quote = i < 15 ? i : 15;
+            cmd = CMD_STRING;
+            arg.type = ARGTYPE_STR;
+            arg.length = last_quote;
+            memcpy(arg.val.text, hpbuf + hppos, arg.length);
+        } else {
+            // Not a string; try to find command
+            int cmd_end = hppos;
+            while (cmd_end < hpend && hpbuf[cmd_end] != ' ')
+                cmd_end++;
+            if (cmd_end == hppos)
+                goto line_done;
+            cmd = find_builtin(hpbuf + hppos, cmd_end - hppos);
+            if (cmd != CMD_NONE) {
+                int flags = cmdlist(cmd)->flags;
+                if ((flags & (FLAG_IMMED | FLAG_HIDDEN | FLAG_NO_PRGM)) != 0)
+                    goto line_done;
+                int argtype = cmdlist(cmd)->argtype;
+                switch (argtype) {
+                    case ARG_NONE: {
+                        arg.type = ARGTYPE_NONE;
+                        goto store;
+                    }
+                    case ARG_VAR:
+                    case ARG_REAL: {
+                        bool ind = false;
+                        int tok_start, tok_end;
+                        if (!nexttoken(hpbuf, cmd_end, hpend, &tok_start, &tok_end))
+                            goto line_done;
+                        if (string_equals(hpbuf + tok_start, tok_end - tok_start, "IND", 3)) {
+                            ind = true;
+                            if (!nexttoken(hpbuf, tok_end, hpend, &tok_start, &tok_end))
+                                goto line_done;
+                        }
+                        if (string_equals(hpbuf + tok_start, tok_end - tok_start, "ST", 2)) {
+                            arg.type = ind ? ARGTYPE_IND_STK : ARGTYPE_STK;
+                            if (!nexttoken(hpbuf, tok_end, hpend, &tok_start, &tok_end))
+                                goto line_done;
+                            if (tok_end - tok_start != 1)
+                                goto line_done;
+                            char c = hpbuf[tok_start];
+                            if (c != 'X' && c != 'Y' && c != 'Z' && c != 'T'
+                                    && c != 'L')
+                                goto line_done;
+                            arg.val.stk = c;
+                            goto store;
+                        }
+                        if (tok_end - tok_start == 2 && isdigit(hpbuf[tok_start])
+                                                     && isdigit(hpbuf[tok_start + 1])) {
+                            arg.type = ind ? ARGTYPE_IND_NUM : ARGTYPE_NUM;
+                            sscanf(hpbuf + tok_start, "%02d", &arg.val.num);
+                            goto store;
+                        }
+                        if (hpbuf[tok_start] == '"') {
+                            arg.type = ind ? ARGTYPE_IND_STR : ARGTYPE_STR;
+                            hppos = tok_start + 1;
+                            // String arguments can be up to 7 characters long, and they
+                            // can contain double quotes. We scan forward for up to 7
+                            // chars, and the final double quote we find is considered the
+                            // end of the string; any intervening double quotes are considered
+                            // to be part of the string.
+                            int last_quote = -1;
+                            int i;
+                            for (i = 0; i < 8; i++) {
+                                if (hppos + i == hpend)
+                                    break;
+                                c = hpbuf[hppos + i];
+                                if (c == '"')
+                                    last_quote = i;
+                            }
+                            if (last_quote == -1)
+                                // No closing quote? Fishy, but let's just grab 7
+                                // characters and hope for the best.
+                                last_quote = i < 7 ? i : 7;
+                            arg.length = last_quote;
+                            memcpy(arg.val.text, hpbuf + hppos, arg.length);
+                            goto store;
+                        }
+                        goto line_done;
+                    }
+                    default:
+                        goto line_done;
+                }
+
+            } else {
+                // Handle ASSIGN, KEY GTO, KEY XEQ, numbers, ...
+                goto line_done;
+            }
+        }
+
+        store:
+        if (after_end)
+            goto_dot_dot();
+        after_end = cmd == CMD_END;
+        if (!after_end)
+            store_command_after(&pc, cmd, &arg);
+
+        line_done:
+        pos = end + 1;
+    }
+
+}
+
 void core_paste(const char *buf) {
+    if (mode_interruptible != NULL)
+        stop_interruptible();
+    set_running(false);
+
     if (flags.f.prgm_mode) {
-        display_error(ERR_NOT_YET_IMPLEMENTED, 0);
-        redisplay();
-        return;
+        paste_programs(buf);
     } else if (flags.f.alpha_mode) {
         char hpbuf[48];
         int len = ascii2hp(hpbuf, buf, 44);
@@ -3098,7 +3369,9 @@ static synonym_spec hp41_synonyms[] =
     { "R-P",    3, CMD_TO_POL  },
     { "ST+",    3, CMD_STO_ADD },
     { "ST/",    3, CMD_STO_DIV },
+    { "STO/",   4, CMD_STO_DIV },
     { "ST*",    3, CMD_STO_MUL },
+    { "STO*",   4, CMD_STO_MUL },
     { "ST-",    3, CMD_STO_SUB },
     { "X<=0?",  5, CMD_X_LE_0  },
     { "X<=Y?",  5, CMD_X_LE_Y  },
