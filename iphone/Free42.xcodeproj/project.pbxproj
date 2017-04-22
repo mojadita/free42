@@ -193,7 +193,7 @@
 		E9BA0E7E0F9224700087EBFB /* SelectSkinView.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = SelectSkinView.h; sourceTree = "<group>"; };
 		E9BA0EAC0F9224F00087EBFB /* AboutView.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = AboutView.h; sourceTree = "<group>"; };
 		E9C061C6127CED07000427AA /* icon@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "icon@2x.png"; sourceTree = "<group>"; };
-		E9C255DA1996B9C1007634C9 /* Ehrling42sl.gif */ = {isa = PBXFileReference; lastKnownFileType = image.gif; name = Ehrling42sl.gif; path = eskins/Ehrling42sl.gif; sourceTree = "<group>"; };
+		E9C255DA1996B9C1007634C9 /* Ehrling42sl.gif */ = {isa = PBXFileReference; lastKnownFileType = image.gif; name = Ehrling42sl.gif; path = skins/Ehrling42sl.gif; sourceTree = "<group>"; };
 		E9C255DB1996B9C1007634C9 /* Ehrling42sl.layout */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; name = Ehrling42sl.layout; path = skins/Ehrling42sl.layout; sourceTree = "<group>"; };
 		E9C92F8A0FE424FE00DC292C /* Default.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Default.png; sourceTree = "<group>"; };
 		E9CD21690FA39C41008E1E65 /* SelectFileView.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = SelectFileView.h; sourceTree = "<group>"; };
